@@ -1,6 +1,6 @@
 import pandas as pd
 from dataclasses import dataclass
-from typing import Dict, Tuple
+from typing import Tuple
 
 @dataclass
 class RangeRule:
@@ -12,6 +12,22 @@ class RangeRule:
 
 def add_month(df: pd.DataFrame, col_fecha: str) -> pd.Series:
     return pd.to_datetime(df[col_fecha]).dt.to_period("M").astype(str)
+
+def _to_numeric_series(s: pd.Series) -> pd.Series:
+    """
+    Conversión robusta a numérico:
+    - Reemplaza coma decimal por punto
+    - Remueve % y espacios típicos
+    - Coerciona errores a NaN (trazable)
+    """
+    if pd.api.types.is_numeric_dtype(s):
+        return s
+
+    s2 = s.astype("string")
+    s2 = s2.str.replace("%", "", regex=False)
+    s2 = s2.str.replace(" ", "", regex=False)
+    s2 = s2.str.replace(",", ".", regex=False)  # decimal comma -> dot
+    return pd.to_numeric(s2, errors="coerce")
 
 def metallurgical_validation_flags(
     df: pd.DataFrame,
@@ -28,10 +44,15 @@ def metallurgical_validation_flags(
     """
     Validación metalúrgica: NO elimina automáticamente.
     Crea flags por variable y un flag_outlier consolidado.
-    Devuelve además cuantificación por OXI y por mes.
+    Devuelve cuantificación por OXI y por mes.
     """
 
     dfv = df.copy()
+
+    # ✅ coerción numérica explícita (evita TypeError y hace trazable lo inválido)
+    for c in [col_p80, col_c, col_rec, col_tms, col_tl]:
+        if c in dfv.columns:
+            dfv[c] = _to_numeric_series(dfv[c])
 
     rules = [
         RangeRule("P80 fuera de rango", col_p80, 2.0, 25.0, "mm"),
@@ -53,8 +74,7 @@ def metallurgical_validation_flags(
     # Month
     dfv["mes"] = add_month(dfv, col_fecha)
 
-    # Quantification by OXI and month
-    # (Assumes df already has 'oxi_dominante' column; if not, caller adds it)
+    # Ensure OXI exists
     if "oxi_dominante" not in dfv.columns:
         dfv["oxi_dominante"] = "SIN_OXI"
 
@@ -69,7 +89,7 @@ def metallurgical_validation_flags(
     )
     summary["pct_outliers"] = summary["pct_outliers"] * 100.0
 
-    # Long table of flags for drill-down
+    # Flags by cause (drilldown)
     flag_long = []
     for r in rules:
         flag_long.append(
