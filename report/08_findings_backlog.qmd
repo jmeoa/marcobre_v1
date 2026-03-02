@@ -1,0 +1,15 @@
+---
+title: "08 — Hallazgos y backlog (accionable)"
+---
+
+## Hallazgos esperables (plantilla)
+- Variables críticas con baja completitud (p. ej. recuperación, carbonatos, p80).
+- Periodos con cambios de mix OXI que invalidan comparaciones directas.
+- Outliers de recuperación asociados a eventos (paradas/mezclas/ri­ego).
+
+## Backlog recomendado (para robustecer el caso de negocio)
+1) Incorporar `timestamp_inicio`–`timestamp_fin` de lote para join por intervalo.
+2) Estabilizar diccionario de tags/unidades.
+3) Incorporar variables SX/EW para cerrar balances y aislar efectos:
+   - Caudales, concentraciones Cu/H2SO4, inventarios, producción real, etc.
+4) Añadir un registro de eventos y cambios de setpoints.

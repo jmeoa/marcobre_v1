@@ -1,0 +1,53 @@
+project:
+  type: website
+  output-dir: _site
+
+website:
+  title: "Marcobre Bateas — Fase 0 (EDA + Data Quality)"
+  navbar:
+    left:
+      - href: index.qmd
+        text: Inicio
+      - href: report/01_scope_questions.qmd
+        text: Preguntas
+      - href: report/02_ingestion_schema.qmd
+        text: Ingesta & Esquema
+      - href: report/03_completeness_quality.qmd
+        text: Calidad
+      - href: report/04_join_turnos_bateas.qmd
+        text: Join Turnos↔Bateas
+      - href: report/05_oxi_characterization.qmd
+        text: OXI
+      - href: report/06_operational_windows_drivers.qmd
+        text: Drivers & Ventanas
+      - href: report/07_correlations_models.qmd
+        text: Correlaciones & Modelos
+      - href: report/08_findings_backlog.qmd
+        text: Hallazgos & Backlog
+
+format:
+  html:
+    theme: cosmo
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    code-fold: true
+    code-tools: true
+
+execute:
+  echo: false
+  warning: false
+  message: false
+  cache: true
+
+# Centralized parameters (override as needed)
+params:
+  data_dir: "data"
+  bateas_file: "bateas.csv"
+  turnos_file: "turnos.csv"
+  date_col_bateas: "fecha"
+  date_col_turnos: "fecha"
+  turno_col: "turno"
+  oxi_col: "oxi"
+  toneladas_col: "toneladas"
+  recovery_col: "recuperacion"

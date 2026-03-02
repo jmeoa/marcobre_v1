@@ -1,0 +1,51 @@
+---
+title: "04 — Estrategia robusta para asociar Turnos ↔ Bateas"
+---
+
+## Principio metalúrgico de atribución
+Para explicar recuperación por batea/lote, necesitamos **atribuir** condiciones operacionales (turnos) a cada observación de batea.
+Hay 2 enfoques válidos:
+
+1) **Asof-nearest por Turno (A/B)**  
+   Útil cuando:
+   - Turnos está a grano turno/día
+   - Bateas tiene fecha/hora dentro del turno
+   - Queremos “la condición operacional más cercana”
+
+2) **Join por intervalo (start–end de lote)**  
+   Útil cuando:
+   - Tenemos `timestamp_inicio` y `timestamp_fin` del lote
+   - Queremos promedios/percentiles de variables de turno durante la residencia
+
+En esta versión implementamos (1) por robustez y porque funciona incluso sin timestamps inicio–fin.
+
+```{python}
+from src.join import join_turnos_to_bateas_asof
+
+df = join_turnos_to_bateas_asof(
+    bateas=bateas,
+    turnos=turnos,
+    date_bateas=params.date_col_bateas,
+    date_turnos=params.date_col_turnos,
+    turno_col=params.turno_col,
+    tolerance="36h"
+)
+
+df.shape
+```
+
+## Chequeo de éxito del join
+
+```{python}
+joined_rate = df[params.date_col_turnos].notna().mean() if params.date_col_turnos in df.columns else df.filter(like="_turno").notna().any(axis=1).mean()
+joined_rate
+```
+
+```{python}
+# Exporta para auditoría
+import os
+from pathlib import Path
+outdir = Path("out"); outdir.mkdir(exist_ok=True)
+df.to_csv(outdir/"bateas_with_turnos_joined.csv", index=False)
+(outdir/"bateas_with_turnos_joined.csv").as_posix()
+```

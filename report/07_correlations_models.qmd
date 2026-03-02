@@ -1,0 +1,51 @@
+---
+title: "07 — Correlaciones y modelos simples (controlando OXI)"
+---
+
+## Correlaciones (screening)
+Objetivo: identificar asociaciones para priorizar hipótesis (no causalidad).
+
+```{python}
+import pandas as pd
+import numpy as np
+
+rec = params.recovery_col
+oxi = params.oxi_col
+
+num = df.select_dtypes(include=["number"]).copy()
+if rec in num.columns:
+    corr = num.corr(numeric_only=True)[[rec]].sort_values(by=rec, ascending=False)
+else:
+    corr = pd.DataFrame({"warning":["No se encontró columna de recuperación en num."]})
+
+corr.head(30)
+```
+
+## Modelo lineal simple por OXI (baseline)
+Esto permite controlar diferencias estructurales por tipo de mineral.
+
+```{python}
+import statsmodels.api as sm
+
+features = [c for c in ["p80","carbonatos","c_total"] if c in df.columns]
+if (rec in df.columns) and (oxi in df.columns) and features:
+    models = []
+    for k, g in df[[oxi, rec] + features].dropna().groupby(oxi):
+        if len(g) < 80:
+            continue
+        X = sm.add_constant(g[features])
+        y = g[rec]
+        m = sm.OLS(y, X).fit()
+        row = {"oxi": k, "n": len(g), "r2": float(m.rsquared)}
+        for f in features:
+            row[f"beta_{f}"] = float(m.params.get(f, np.nan))
+            row[f"p_{f}"] = float(m.pvalues.get(f, np.nan))
+        models.append(row)
+    model_table = pd.DataFrame(models).sort_values("r2", ascending=False)
+else:
+    model_table = pd.DataFrame({"warning":["No hay columnas suficientes para modelar (rec/oxi/features)."]})
+
+model_table
+```
+
+> **Acción**: en la versión avanzada, reemplazar por modelos con controles de tiempo, eventos y variables operacionales de turnos (SX/EW/flujo/química).

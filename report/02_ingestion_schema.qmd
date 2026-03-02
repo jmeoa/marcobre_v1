@@ -1,0 +1,41 @@
+---
+title: "02 — Ingesta, esquema y sanity checks"
+---
+
+```{python}
+import pandas as pd
+from pathlib import Path
+from quarto import params
+
+from src.io import DataPaths, read_csv_safely, to_datetime
+
+paths = DataPaths(
+    data_dir=Path(params.data_dir),
+    bateas_file=params.bateas_file,
+    turnos_file=params.turnos_file
+)
+
+bateas = read_csv_safely(paths.bateas_path)
+turnos = read_csv_safely(paths.turnos_path)
+
+bateas.shape, turnos.shape
+```
+
+## Vista rápida de columnas
+
+```{python}
+pd.DataFrame({"bateas_cols": bateas.columns}).head(50)
+```
+
+```{python}
+pd.DataFrame({"turnos_cols": turnos.columns}).head(50)
+```
+
+## Conversión de fechas (robusta)
+
+```{python}
+bateas = to_datetime(bateas, params.date_col_bateas)
+turnos = to_datetime(turnos, params.date_col_turnos)
+
+bateas[[params.date_col_bateas]].head(), turnos[[params.date_col_turnos]].head()
+```

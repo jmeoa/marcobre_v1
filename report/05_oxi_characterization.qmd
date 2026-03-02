@@ -1,0 +1,56 @@
+---
+title: "05 — Caracterización por OXI"
+---
+
+```{python}
+import pandas as pd
+
+oxi = params.oxi_col
+tons = params.toneladas_col
+
+# Mineral tratado por OXI
+if oxi in df.columns and tons in df.columns:
+    treated = df.groupby(oxi)[tons].sum().sort_values(ascending=False).to_frame("toneladas_tratadas")
+else:
+    treated = pd.DataFrame({"warning":["No se encontraron columnas oxi/toneladas según params. Ajusta _quarto.yml"]})
+
+treated
+```
+
+## Distribución temporal del mix OXI
+
+```{python}
+import matplotlib.pyplot as plt
+
+datecol = params.date_col_bateas
+if oxi in df.columns and datecol in df.columns and tons in df.columns:
+    tmp = df.dropna(subset=[datecol]).copy()
+    tmp["month"] = tmp[datecol].dt.to_period("M").dt.to_timestamp()
+    mix = tmp.groupby(["month", oxi])[tons].sum().reset_index()
+    pivot = mix.pivot(index="month", columns=oxi, values=tons).fillna(0)
+    plt.figure()
+    pivot.plot(kind="area")
+    plt.title("Toneladas tratadas por OXI — por mes")
+    plt.xlabel("Mes")
+    plt.ylabel("t")
+    plt.tight_layout()
+```
+
+## Perfil metalúrgico por OXI (si existen columnas)
+
+```{python}
+from src.qa import numeric_summary
+
+profile_cols = ["c_total","carbonatos","p80", params.recovery_col]
+if oxi in df.columns:
+    profiles = []
+    for k, g in df.groupby(oxi):
+        s = numeric_summary(g, [c for c in profile_cols if c in g.columns])
+        s.insert(0, oxi, k)
+        profiles.append(s)
+    profiles = pd.concat(profiles, ignore_index=True) if profiles else pd.DataFrame()
+else:
+    profiles = pd.DataFrame({"warning":["No existe columna OXI en df."]})
+
+profiles.head(50)
+```

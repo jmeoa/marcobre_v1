@@ -1,0 +1,47 @@
+---
+title: "06 — Ventanas operacionales y drivers multivariables"
+---
+
+## Definición de “ventana operacional”
+Una ventana operacional es un rango conjunto (p10–p90, o límites técnicos) de variables controlables
+(p. ej. P80, dosificación ácido, riego, Cu/ácido en refino) dentro del cual se observa un desempeño superior.
+
+### Enfoque práctico en Fase 0
+1) Segmentar por **OXI**
+2) Dentro de cada OXI: binning por cuantiles de variables controlables
+3) Comparar mediana de recuperación (o proxy) entre bins
+4) Construir candidatos de “ventanas” con:
+   - tamaño de muestra suficiente
+   - efecto consistente
+   - plausibilidad metalúrgica
+
+```{python}
+import pandas as pd
+import numpy as np
+
+oxi = params.oxi_col
+rec = params.recovery_col
+
+candidate_controls = [c for c in ["p80","carbonatos","c_total"] if c in df.columns]
+
+def window_scan(df_in: pd.DataFrame, control: str, q=5):
+    d = df_in[[control, rec]].dropna()
+    if len(d) < 50:
+        return pd.DataFrame()
+    d["bin"] = pd.qcut(d[control], q=q, duplicates="drop")
+    out = d.groupby("bin")[rec].agg(["count","median","mean"]).reset_index()
+    out.insert(0, "control", control)
+    return out
+
+results = []
+if oxi in df.columns and rec in df.columns:
+    for ox, g in df.groupby(oxi):
+        for c in candidate_controls:
+            r = window_scan(g, c)
+            if not r.empty:
+                r.insert(0, oxi, ox)
+                results.append(r)
+
+windows = pd.concat(results, ignore_index=True) if results else pd.DataFrame({"warning":["No hay suficientes datos/columnas para scan."]})
+windows.head(60)
+```
