@@ -33,7 +33,7 @@ t_{fin} = \texttt{fecha\_rebose}, \qquad t_{ini} = t_{fin} - \texttt{tiempo\_de\
 ## 1) Carga de datos
 
 ```{python}
-from src.io import read_bateas_raw, read_turnos_raw, write_processed
+from src.io import read_bateas_raw, read_turnos_raw, standardize_columns, coerce_numeric_columns, write_processed
 import pandas as pd
 import numpy as np
 
@@ -104,6 +104,33 @@ out_path
 
 ```{python}
 df = df_bateas_enriched.copy()
+
+# --- Tipado numérico SIN perder la data original ---
+# Estrategia:
+# 1) Para columnas candidatas, guardamos el texto original en <col>__raw (auditable)
+# 2) Convertimos a float usando reglas LATAM (',' decimal; '.' miles) + limpieza de unidades/%
+# 3) Reportamos cuántos valores se vuelven NaN (para que NO pase desapercibido)
+
+# Candidatos por nombre + lista metalúrgica explícita (si existen en la base)
+explicit_numeric = [
+  "pctc","p80_mm","pctrec_cusac","cut_pct","cusac_pct",
+  "toneladas","toneladas_lote","mineral_procesado_t",
+  "h2so4_gpl","cu_gpl","ph","orp_mv"
+]
+pattern_numeric = [c for c in df.columns if any([
+  c.endswith("_pct"), c.endswith("_ppm"), c.endswith("_ppm"),
+  c.endswith("_gpl"), c.endswith("_kg_t"), c.endswith("_kgpt"),
+  c.endswith("_mm"), c.endswith("_um"), c.endswith("_m3h"),
+  c.endswith("_m3"), c.endswith("_t"), c.endswith("_tpd")
+])]
+numeric_candidates = sorted(set([c for c in (explicit_numeric + pattern_numeric) if c in df.columns]))
+
+df, coerce_report = coerce_numeric_columns(df, numeric_candidates, keep_raw=True)
+
+# Auditoría rápida de conversión
+coerce_report = coerce_report.sort_values(["n_new_nan","success_rate"], ascending=[False, True])
+coerce_report.head(15)
+
 
 oxi_cols = [c for c in df.columns if c.startswith("pctoxi_")]
 oxi_cols
