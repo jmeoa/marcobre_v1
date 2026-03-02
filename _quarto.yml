@@ -1,0 +1,26 @@
+project:
+  type: website
+  output-dir: _site
+  render:
+    - index.qmd
+
+website:
+  title: "Marcobre Bateas — EDA & Data QA"
+  navbar:
+    left:
+      - text: "Reporte"
+        file: index.qmd
+
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    theme: cosmo
+    code-fold: true
+    code-tools: true
+    df-print: paged
+execute:
+  echo: false
+  warning: false
+  message: false
+  cache: false
