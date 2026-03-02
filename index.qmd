@@ -1,240 +1,391 @@
 ---
-title: "Marcobre Bateas — EDA, Completitud y Calidad de Datos"
-subtitle: "Fase 0 — Bateas + Turnos (ventanas operacionales)"
-author: "José M. Olguín (workflow reproducible)"
-date: last-modified
+title: "Marcobre — Fase 0 | Reconstrucción Técnica (Metalurgia Senior)"
+subtitle: "Pipeline auditable, validación metalúrgica, segmentación mineralógica y delimitación de ventanas operacionales"
 format:
   html:
+    theme: cosmo
     toc: true
     toc-depth: 3
-    theme: cosmo
+    code-fold: false
+    smooth-scroll: true
 execute:
-  echo: false
+  echo: true
   warning: false
   message: false
 ---
 
-## Objetivo
-
-Este documento deja un flujo **reproducible** para:
-
-- Auditar **completitud** y **calidad** de la base (Bateas + Turnos).
-- Construir una tabla analítica por batea con una **ventana operacional** definida como:
-
-\[
-t_{fin} = \texttt{fecha\_rebose}, \qquad t_{ini} = t_{fin} - \texttt{tiempo\_de\_lixiviacion\_h}
-\]
-
-- Asociar variables de **Turnos A/B (12h)** a cada batea mediante promedios/sumas ponderados por horas de solapamiento.
-- Responder preguntas del tipo: “¿cuánto mineral por OXI se ha tratado?”, “¿cómo se caracterizan los OXI en carbono/carbonatos/P80/recuperación?”, “¿hay cambios relevantes en el mix de OXI en el tiempo?”, “¿qué variables explican recuperación?”.
-
----
-
-## 1) Carga de datos
-
 ```{python}
-from src.io import read_bateas_raw, read_turnos_raw, standardize_columns, coerce_numeric_columns, write_processed
 import pandas as pd
 import numpy as np
 
-df_bateas_raw = read_bateas_raw()
-df_turnos_raw = read_turnos_raw()
+from src.cleaning import technical_cleaning_audit
+from src.validation import metallurgical_validation_flags
+from src.modeling import (
+    build_oxi_dominant,
+    characterize_by_oxi,
+    compare_oxis,
+    fit_models_drivers
+)
+from src.viz import (
+    bar_impact, waterfall_total,
+    outlier_rate_heatmap,
+    histogram_by_oxi, boxplot_by_oxi,
+    stacked_area_mix, rolling_recovery_plot,
+    residuals_plot, importance_bar,
+    heatmap_window
+)
 
-df_bateas_raw.shape, df_turnos_raw.shape
+# ------------------------
+# 0) Carga y estandarización mínima
+# ------------------------
+df = pd.read_csv("data/marcobre_fase0_dataset_consolidado.csv")
+
+# Parse de fecha con coerción explícita (evita supuestos ocultos)
+df["fecha_rebose"] = pd.to_datetime(df["fecha_rebose"], errors="coerce")
+
+# Segmentación mineralógica de primer orden (OXI dominante) para control de mix
+df["oxi_dominante"] = build_oxi_dominant(df)
+
+# Eje temporal de lectura ejecutiva (agregación mensual)
+df["mes"] = df["fecha_rebose"].dt.to_period("M").astype(str)
 ```
 
-### Diccionario mínimo (variables críticas)
+# 1. Propósito y Alcance del Análisis
 
-- **tms**: tonelaje por batea (base masa).
-- **pctoxi_***: mix de mineral por clase OXI.
-- **pctrec_cusac**: recuperación acumulada (proxy metalúrgica).
-- **p80_mm**, **pctc**: drivers de reactividad / consumo.
-- **fecha_rebose**, **tiempo_de_lixiviacion_h**: definen la ventana temporal real de operación por batea.
-- Turnos: **flujos** (SX/LIX), **pH**, **dosificación**, **tms_x_turno**.
+Este análisis da respuesta a **qué parte de la variabilidad de recuperación está determinada por el mix mineral (OXI)** y **qué parte es operacionalmente controlable**, con foco en decisiones y captura incremental.
+
+El alcance técnico es:
+
+- Establecer una **depuración técnica auditable** (exclusión solo por imposibilidad de uso).
+- Marcar **desviaciones metalúrgicas de rango operativo** (sin eliminación automática).
+- Caracterizar estadísticamente la recuperación por **dominio mineralógico** (OXI dominante).
+- Leer evolución temporal real, incluyendo mix y quiebres simples para hipótesis.
+- Ajustar modelos de drivers **controlando por OXI** y evaluar robustez.
+- Delimitar **ventanas operacionales replicables** (no “mejores puntos”), con límites numéricos.
+
+El documento está escrito para reemplazar un análisis superficial por un flujo defendible frente a operación y, posteriormente, derivable a formato ejecutivo/finanzas.
 
 ---
 
-## 2) Auditoría de estructura, tipos y nulos
+# 2. Depuración Técnica de la Base de Datos
+
+En hidrometalurgia, registros incompletos no son “ruido estadístico”: suelen representar **gaps de medición**, **problemas de integración por ventana**, o **eventos no capturados**.  
+Por lo tanto, la depuración se restringe a condiciones que vuelven el registro técnicamente inutilizable, y se audita el impacto por regla.
+
+## 2.1 Criterios de exclusión (obligatorios)
+
+Se excluyen filas cuando ocurre cualquiera de las siguientes condiciones:
+
+- `pctrec_cusac` es NaN
+- `p80_mm` es NaN
+- `tms` es NaN
+- `tiempo_de_lixiviacion_h <= 0` (incluye NaN)
+- `fecha_rebose` es NaT
 
 ```{python}
-from src.plots import missingness_bar
-df_bateas_raw.dtypes.head(20)
+df_clean, impact = technical_cleaning_audit(
+    df,
+    col_rec="pctrec_cusac",
+    col_p80="p80_mm",
+    col_tms="tms",
+    col_tl="tiempo_de_lixiviacion_h",
+    col_fecha="fecha_rebose",
+)
+impact
 ```
 
 ```{python}
-fig = missingness_bar(df_bateas_raw, top=25)
-fig
+bar_impact(impact)
 ```
 
 ```{python}
-fig = missingness_bar(df_turnos_raw, top=25)
-fig
+before = int(len(df))
+after  = int(len(df_clean))
+waterfall_total(before, after)
 ```
+
+## 2.2 Interpretación técnica del impacto
+
+- Si el porcentaje eliminado es bajo y estable, la base es consistente para análisis.
+- Si supera rangos típicos (~3–5%) de forma persistente, se sugiere revisar:
+  - definición de ventanas por turno (A/B 12h),
+  - lógica de join por intervalo (fecha rebose vs variables de proceso),
+  - gaps de historiador o fallas de instrumentación,
+  - cambios de tags o mapping en el período.
+
+La eliminación masiva **no se interpreta como “mejor limpieza”**, sino como pérdida de observabilidad del proceso.
 
 ---
 
-## 3) Construcción de ventanas operacionales y features de turnos
+# 3. Validación Metalúrgica de Rango Operacional (sin eliminación automática)
 
-**Definición de turnos (12h):**
+Un registro fuera de rango puede corresponder a:
 
-- Turno **A**: 08:00–20:00
-- Turno **B**: 20:00–08:00 (día siguiente)
+- mineral con respuesta extrema,
+- cambio de receta (p.ej., curado/dosificación),
+- variación hidráulica o percolación,
+- error de medición o cálculo.
+
+Por esta razón, la validación se implementa como **flagging** y cuantificación por segmento y período, no como limpieza.
+
+## 3.1 Rangos razonables iniciales (ajustables con evidencia)
+
+- P80: 2–25 mm  
+- %C: 0–5 %  
+- Recuperación: 0–100 %  
+- TMS > 0  
+- Tiempo de lixiviación: 1–240 h (operacional preliminar)
 
 ```{python}
-from src.turnos_features import add_batea_time_window, build_turno_intervals, attach_turno_features
-
-df_bateas_tw = add_batea_time_window(df_bateas_raw)
-df_turnos_iv = build_turno_intervals(df_turnos_raw)
-
-df_bateas_tw[["codigo_de_batea","timestamp_start","timestamp_end","tiempo_de_lixiviacion_h"]].head()
+dfv, outliers_summary = metallurgical_validation_flags(
+    df_clean,
+    col_p80="p80_mm",
+    col_c="pctc",
+    col_rec="pctrec_cusac",
+    col_tms="tms",
+    col_tl="tiempo_de_lixiviacion_h",
+    col_fecha="fecha_rebose",
+    tl_low=1,
+    tl_high=240
+)
+outliers_summary.head(12)
 ```
 
 ```{python}
-df_bateas_enriched = attach_turno_features(df_bateas_tw, df_turnos_iv)
-
-out_path = write_processed(df_bateas_enriched, "bateas_enriched_with_turnos.csv")
-out_path
+outlier_rate_heatmap(outliers_summary)
 ```
+
+## 3.2 Lectura metalúrgica de la señal
+
+- Concentración de outliers en un solo OXI: hipótesis mineralógica o de receta específica.
+- Incremento abrupto transversal a OXI: hipótesis de medición/integración/cambio de lógica.
+- Persistencia mensual: probable condición estructural del circuito o de la medición.
+
+Este bloque define un “mapa de riesgos” de interpretación: dónde el análisis posterior puede estar influenciado por desviaciones de rango.
 
 ---
 
-## 4) Preguntas de negocio (respuestas rápidas)
+# 4. Caracterización Estadística por Dominio Mineralógico
 
-### 4.1 ¿Cuánto mineral por OXI ha sido tratado?
+La toma de decisiones no se basa en promedios aislados. Se requiere:
+
+- tamaño de muestra efectivo,
+- percentiles (p10–p90),
+- dispersión y CV,
+- contraste estadístico entre dominios.
 
 ```{python}
-df = df_bateas_enriched.copy()
-
-# --- Tipado numérico SIN perder la data original ---
-# Estrategia:
-# 1) Para columnas candidatas, guardamos el texto original en <col>__raw (auditable)
-# 2) Convertimos a float usando reglas LATAM (',' decimal; '.' miles) + limpieza de unidades/%
-# 3) Reportamos cuántos valores se vuelven NaN (para que NO pase desapercibido)
-
-# Candidatos por nombre + lista metalúrgica explícita (si existen en la base)
-explicit_numeric = [
-  "pctc","p80_mm","pctrec_cusac","cut_pct","cusac_pct",
-  "toneladas","toneladas_lote","mineral_procesado_t",
-  "h2so4_gpl","cu_gpl","ph","orp_mv"
-]
-pattern_numeric = [c for c in df.columns if any([
-  c.endswith("_pct"), c.endswith("_ppm"), c.endswith("_ppm"),
-  c.endswith("_gpl"), c.endswith("_kg_t"), c.endswith("_kgpt"),
-  c.endswith("_mm"), c.endswith("_um"), c.endswith("_m3h"),
-  c.endswith("_m3"), c.endswith("_t"), c.endswith("_tpd")
-])]
-numeric_candidates = sorted(set([c for c in (explicit_numeric + pattern_numeric) if c in df.columns]))
-
-df, coerce_report = coerce_numeric_columns(df, numeric_candidates, keep_raw=True)
-
-# Auditoría rápida de conversión
-coerce_report = coerce_report.sort_values(["n_new_nan","success_rate"], ascending=[False, True])
-coerce_report.head(15)
-
-
-oxi_cols = [c for c in df.columns if c.startswith("pctoxi_")]
-oxi_cols
+char_rec = characterize_by_oxi(dfv, col_y="pctrec_cusac", group_col="oxi_dominante")
+char_rec
 ```
 
 ```{python}
-# toneladas equivalentes por OXI (tms * %oxi)
-for c in oxi_cols:
-    df[f"tms__{c}"] = df["tms"] * pd.to_numeric(df[c], errors="coerce") / 100.0
-
-tms_oxi = df[[f"tms__{c}" for c in oxi_cols]].sum().sort_values(ascending=False)
-tms_oxi
+histogram_by_oxi(dfv, col="pctrec_cusac", unit="%")
 ```
 
 ```{python}
-import matplotlib.pyplot as plt
-fig, ax = plt.subplots(figsize=(8,4))
-ax.bar(tms_oxi.index.astype(str), tms_oxi.values)
-ax.set_title("Toneladas equivalentes tratadas por clase OXI")
-ax.set_ylabel("tms")
-ax.tick_params(axis="x", rotation=60)
-plt.tight_layout()
-fig
+boxplot_by_oxi(dfv, col="pctrec_cusac", unit="%")
 ```
 
-### 4.2 ¿Características por OXI (C, P80, recuperación)?
+## 4.1 Contraste entre dominios (robusto)
 
-**Enfoque:** asignar a cada batea su **OXI dominante** (máximo %). Luego resumir distribuciones por grupo.
+Se utiliza Kruskal-Wallis como prueba robusta (no asume normalidad), con fines de detección de diferencias estructurales.
 
 ```{python}
-df["oxi_dominante"] = df[oxi_cols].idxmax(axis=1)
-df["oxi_dominante"].value_counts().head()
+test = compare_oxis(dfv, col_y="pctrec_cusac", group_col="oxi_dominante")
+test
 ```
 
-```{python}
-group_cols = ["pctc", "p80_mm", "pctrec_cusac", "cut_pct", "cusac_pct"]
-summary = df.groupby("oxi_dominante")[group_cols].agg(["count","mean","median","std"])
-summary
-```
-
-### 4.3 Mix de tratamiento por OXI vs tiempo (¿cambio relevante?)
-
-```{python}
-df["rebose_day"] = pd.to_datetime(df["fecha_rebose"], errors="coerce").dt.to_period("M").dt.to_timestamp()
-
-mix = (df.groupby("rebose_day")[[f"tms__{c}" for c in oxi_cols]].sum())
-mix_frac = mix.div(mix.sum(axis=1), axis=0)
-
-mix_frac.tail()
-```
-
-```{python}
-import matplotlib.pyplot as plt
-fig, ax = plt.subplots(figsize=(10,4))
-for col in mix_frac.columns:
-    ax.plot(mix_frac.index, mix_frac[col], label=col)
-ax.set_title("Fracción de toneladas equivalentes por OXI — evolución mensual (por fecha_rebose)")
-ax.set_ylabel("Fracción")
-ax.legend(ncols=3, fontsize=8)
-plt.tight_layout()
-fig
-```
-
-### 4.4 Correlaciones con recuperación (screening rápido)
-
-```{python}
-from src.plots import corr_heatmap
-
-# set mínimo de variables metalúrgicas/operacionales (ajustable)
-candidate = [
-    "pctrec_cusac", "cut_pct", "cusac_pct", "pctc", "p80_mm",
-    "ratio_de_curado_kg_tn", "pcthumedad_inicial",
-    "turno_mean__flujo_lix_hg", "turno_mean__flujo_lix_lg",
-    "turno_mean__flujo_sx_hg", "turno_mean__flujo_sx_lg",
-    "turno_mean__ph_pls_hg", "turno_mean__ph_pls_lg",
-    "turno_mean__dosificacion_acido_x_dia_kg_tms",
-]
-candidate = [c for c in candidate if c in df.columns]
-candidate
-```
-
-```{python}
-fig = corr_heatmap(df, cols=candidate)
-fig
-```
+**Implicancia:** si existe diferencia estructural entre dominios, el desempeño mensual agregado puede moverse por mix mineral sin intervención operacional.  
+En ese caso, cualquier evaluación de iniciativas debe controlarse por mix.
 
 ---
 
-## 5) Checklist de calidad (acción inmediata)
+# 5. Evolución Temporal y Cambios Estructurales
 
-- **Tiempo**: validar que `timestamp_start < timestamp_end` y que `tiempo_de_lixiviacion_h` sea positivo.
-- **OXI**: validar que \( \sum pctoxi_* \approx 100\% \) por batea (tolerancia).
-- **Rangos**: P80, %C, recuperación, humedad, dosis ácido: detectar outliers (p1/p99).
-- **Unidades**: confirmar que `ratio_de_curado_kg_tn` y `dosificacion_acido_x_dia_kg_tms` no estén duplicando definiciones (setpoint vs real).
+## 5.1 Mix mineral mensual (OXI dominante)
 
 ```{python}
-checks = {}
-checks["bad_time_window"] = int(((df["timestamp_start"].isna()) | (df["timestamp_end"].isna()) | (df["timestamp_start"] >= df["timestamp_end"])).sum())
-checks["oxi_sum_out_of_range"] = int(((df[oxi_cols].sum(axis=1) < 95) | (df[oxi_cols].sum(axis=1) > 105)).sum())
-checks
+mix = (
+    dfv.groupby(["mes","oxi_dominante"])
+       .size()
+       .rename("n")
+       .reset_index()
+)
+mix_total = mix.groupby("mes")["n"].sum().rename("n_mes").reset_index()
+mix = mix.merge(mix_total, on="mes", how="left")
+mix["share_pct"] = mix["n"] / mix["n_mes"] * 100.0
+
+stacked_area_mix(mix)
 ```
+
+## 5.2 Recuperación mensual y tendencia suavizada
+
+```{python}
+ts = (
+    dfv.groupby("mes")["pctrec_cusac"]
+       .mean()
+       .rename("rec_mean")
+       .reset_index()
+       .sort_values("mes")
+)
+ts["rec_roll3"] = ts["rec_mean"].rolling(3, min_periods=2).mean()
+
+rolling_recovery_plot(ts)
+```
+
+## 5.3 Detección simple de quiebres (hipótesis)
+
+Este componente no pretende “probar causalidad”. Su objetivo es priorizar investigación con operación, mantenimiento, TI y metalurgia.
+
+```{python}
+import ruptures as rpt
+
+ts2 = ts.dropna().copy()
+signal = ts2["rec_mean"].values
+
+bkps = []
+if len(signal) >= 8:
+    algo = rpt.Pelt(model="rbf").fit(signal)
+    bkps = algo.predict(pen=3)
+
+bkps
+```
+
+Interpretación esperada:
+
+- Quiebre coincidente con cambio operacional conocido → hipótesis de efecto real.
+- Quiebre coincidente con cambio de datos/integración → riesgo de comparación histórica.
 
 ---
 
-## 6) Outputs
+# 6. Identificación de Variables Operacionales con Influencia Significativa (controlando por OXI)
 
-- `data/processed/bateas_enriched_with_turnos.csv` (tabla base para modelos / dashboards).
+El criterio de lectura senior es directo:
+
+- Primero se controla por mineral (OXI).
+- Luego se evalúa qué variables mantienen influencia significativa.
+- Se exige coherencia física y estabilidad, no solo p-values.
+
+Se ajustan:
+
+- OLS multivariable con dummies por OXI.
+- Modelo robusto RLM (Huber) como contraste frente a extremos.
+
+```{python}
+ols, rlm, betas, importance, meta = fit_models_drivers(
+    dfv,
+    y="pctrec_cusac",
+    oxi_col="oxi_dominante"
+)
+
+meta
+```
+
+```{python}
+betas
+```
+
+## 6.1 Diagnóstico de residuos
+
+```{python}
+res_df = dfv.dropna(subset=["pctrec_cusac"]).copy()
+model_index = ols.model.data.row_labels
+res_df = res_df.loc[model_index].copy()
+res_df["y_hat"] = ols.fittedvalues
+res_df["resid"] = ols.resid
+
+residuals_plot(res_df)
+```
+
+## 6.2 Importancia relativa (proxy) controlando por OXI
+
+Este indicador no reemplaza inferencia formal; permite priorizar variables para pruebas operacionales y estandarización.
+
+```{python}
+importance_bar(importance)
+```
+
+**Lectura operativa esperada:**
+
+- Variables de chancado (P80) significativas → oportunidad de estabilización granulométrica.
+- Variables de curado/dosificación significativas → oportunidad de receta/estándar.
+- Variables hidráulicas dominantes → el circuito está gobernado por percolación/distribución de riego y no por química nominal.
+
+---
+
+# 7. Delimitación de Ventanas Operacionales Replicables
+
+La ventana operacional es un rango replicable, no un punto máximo.  
+Se define “alto desempeño” como top 20% de recuperación y se reportan límites robustos (p10–p90).
+
+```{python}
+dwin = dfv.dropna(subset=["pctrec_cusac","p80_mm","pctc","tiempo_de_lixiviacion_h"]).copy()
+thr = np.nanpercentile(dwin["pctrec_cusac"].values, 80)
+dwin["top20"] = dwin["pctrec_cusac"] >= thr
+
+thr
+```
+
+```{python}
+top = dwin[dwin["top20"]].copy()
+
+window_limits = pd.DataFrame([
+    {"variable":"p80_mm","unidad":"mm","p10":top["p80_mm"].quantile(0.10),"p90":top["p80_mm"].quantile(0.90)},
+    {"variable":"pctc","unidad":"%","p10":top["pctc"].quantile(0.10),"p90":top["pctc"].quantile(0.90)},
+    {"variable":"tiempo_de_lixiviacion_h","unidad":"h","p10":top["tiempo_de_lixiviacion_h"].quantile(0.10),"p90":top["tiempo_de_lixiviacion_h"].quantile(0.90)},
+])
+window_limits
+```
+
+```{python}
+heatmap_window(
+    dwin,
+    x="p80_mm",
+    y="pctc",
+    z="pctrec_cusac",
+    x_unit="mm",
+    y_unit="%",
+    z_unit="%"
+)
+```
+
+```{python}
+heatmap_window(
+    dwin,
+    x="tiempo_de_lixiviacion_h",
+    y="p80_mm",
+    z="pctrec_cusac",
+    x_unit="h",
+    y_unit="mm",
+    z_unit="%"
+)
+```
+
+**Uso práctico:** este bloque define un rango operativo defendible para estandarización y pilotos.  
+La recomendación base es operacionalizar el rango p10–p90 del top20, evitando extrapolación hacia extremos.
+
+---
+
+# 8. Implicancias para Captura de Valor (marco para derivación a finanzas)
+
+Este documento deja los insumos para cuantificar captura incremental de forma trazable:
+
+1) Definir baseline por OXI y mes (evitar atribución falsa por mix).  
+2) Estimar uplift en recuperación al mover población desde baseline hacia ventana replicable.  
+3) Ponderar por TMS mensual afectada.  
+4) Convertir a Cu fino incremental y valorizar a supuestos conservadores.  
+5) Aislar efectos frente a iniciativas en paralelo (cambios de chancado, mantenimiento, recetas).
+
+La derivación a foro ejecutivo/finanzas se construye sobre estos pasos con control explícito de mix y trazabilidad del dato.
+
+---
+
+# Anexo A — Diccionario mínimo (explicación operacional)
+
+- `pctrec_cusac (%)`: recuperación Cu soluble ácido; indicador directo de performance de lixiviación.
+- `p80_mm (mm)`: tamaño característico; gobierna cinética/percolación/superficie efectiva.
+- `pctc (%)`: carbono; potencialmente penaliza cinética y/o consume capacidad reactiva según mineralogía.
+- `tiempo_de_lixiviacion_h (h)`: tiempo efectivo de exposición/irrigación dentro de la ventana.
+- `tms (t)`: base de masa; clave para ponderación y caso de negocio.
+- `oxi_dominante`: dominio mineralógico dominante (derivado desde % OXI 2/3/3M/4/4M).
